@@ -39,16 +39,18 @@ function normalizeCurrencyCode(input: unknown): string {
  *               language:
  *                 type: string
  *                 example: ru-RU
- *               image:
- *                 type: object
- *                 required: [mimeType, data]
- *                 properties:
- *                   mimeType:
- *                     type: string
- *                     example: image/jpeg
- *                   data:
- *                     type: string
- *                     description: Base64 image data
+ *                 image:
+ *                   type: object
+ *                   properties:
+ *                     mimeType:
+ *                       type: string
+ *                       example: image/jpeg
+ *                     data:
+ *                       type: string
+ *                       description: Base64 image data
+ *                 qrData:
+ *                   type: string
+ *                   description: Decoded QR code text data
  *     responses:
  *       200:
  *         description: Parsed receipt items
@@ -83,22 +85,20 @@ router.post(
   async (req: AuthRequest, res: Response) => {
     try {
       if (!req.user) return res.status(401).json({ error: "Unauthorized" });
-      const { sessionName, language, image } = req.body || {};
+      const { sessionName, language, image, qrData } = req.body || {};
       if (!sessionName || typeof sessionName !== "string") {
         return res.status(400).json({ error: "sessionName required" });
       }
       if (!language || typeof language !== "string") {
         return res.status(400).json({ error: "language required" });
       }
-      if (
-        !image ||
-        typeof image !== "object" ||
-        !image.mimeType ||
-        !image.data
-      ) {
+      const hasImage = image && typeof image === "object" && image.mimeType && image.data;
+      const hasQr = typeof qrData === "string" && qrData.trim().length > 0;
+      
+      if (!hasImage && !hasQr) {
         return res
           .status(400)
-          .json({ error: "image { mimeType, data } required" });
+          .json({ error: "Either image { mimeType, data } or qrData is required" });
       }
 
       // Create session (name field exists in schema but older DB may lack column; ignore until migration applied)
@@ -113,8 +113,9 @@ router.post(
       const parseResult = await parseReceipt({
         language,
         sessionName,
-        mimeType: image.mimeType,
-        imageBase64: image.data,
+        mimeType: image?.mimeType,
+        imageBase64: image?.data,
+        qrData,
       });
 
       return res.json({

@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import multer from "multer";
 import { authenticateToken } from "../middleware/auth.js";
-import { uploadAvatarObject } from "../config/r2.js";
+import { uploadAvatarObject, uploadObject } from "../config/r2.js";
 import { prisma } from "../config/prisma.js";
 
 type UploadFile = {
@@ -145,6 +145,31 @@ router.post(
       console.error("POST /uploads/avatar error:", err);
       res.status(500).json({ error: "Server error" });
       return;
+    }
+  }
+);
+
+router.post(
+  "/chat",
+  authenticateToken,
+  upload.single("file"),
+  async (req: Request, res: Response) => {
+    try {
+      if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+      const file = (req as any).file;
+      if (!file) return res.status(400).json({ error: "file is required" });
+
+      const { buffer, mimetype } = file;
+      const v = Math.floor(Date.now() / 1000);
+      const ext = mimetype.split("/")[1] || "bin";
+      const key = `chats/${req.user.id}/v${v}/${Date.now()}.${ext}`;
+
+      const put = await uploadObject(key, buffer, mimetype);
+
+      res.json({ success: true, url: put.url, key: put.key });
+    } catch (err) {
+      console.error("POST /uploads/chat error:", err);
+      res.status(500).json({ error: "Server error" });
     }
   }
 );

@@ -19,16 +19,6 @@ import chatsRoutes from "./routes/chats.js";
 dotenv.config();
 
 const app = express();
-
-// Request duration logger
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    console.log(`[API] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
-  });
-  next();
-});
 // Allow configurable JSON body size (large base64 images for /sessions/scan)
 // Default increased from Express ~100kb to 4mb to fit ~3MB binary image (base64 expands ~33%).
 const JSON_LIMIT = process.env.JSON_BODY_LIMIT || "4mb";
@@ -89,8 +79,7 @@ if (allowAllCors) {
 // Swagger UI
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-// API Routes
-app.use("/chats", chatsRoutes);
+// Auth routes with logging
 app.use("/auth", logAuthAttempts, authRoutes);
 app.use("/user", userRoutes);
 app.use("/friends", friendsRoutes);
@@ -99,6 +88,7 @@ app.use("/sessions", sessionsRoutes);
 app.use("/users", usersRoutes);
 app.use("/uploads", uploadsRoutes);
 app.use("/debug", debugRoutes);
+app.use("/chats", chatsRoutes);
 
 // Health check
 app.get("/health", (req, res) => {
@@ -110,7 +100,7 @@ app.use(errorHandler);
 
 // Start server
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(
     "CORS allowlist:",
@@ -120,6 +110,21 @@ app.listen(PORT, () => {
       ? allowlist
       : "(none / dev mode)"
   );
+  console.log('Active handles inside callback:', (process as any)._getActiveHandles().length);
+  (server as any).unref = undefined; // Prevent unref
+});
+
+process.on('exit', (code) => {
+  console.log('Process exiting with code', code);
+  console.trace('Exit trace:');
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+  process.exit(1);
 });
 
 console.log("DEBUG ENV:", {

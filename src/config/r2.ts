@@ -29,7 +29,7 @@ export const r2Client = new S3Client({
   },
 });
 
-export async function uploadAvatarObject(
+export async function uploadObject(
   key: string,
   body: Buffer,
   contentType: string,
@@ -47,3 +47,5 @@ export async function uploadAvatarObject(
   const url = `${CDN_BASE_URL}/${key}`;
   return { key, url };
 }
+
+export const uploadAvatarObject = uploadObject;

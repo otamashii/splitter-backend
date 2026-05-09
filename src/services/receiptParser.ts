@@ -36,8 +36,9 @@ export interface ParseResult {
 export interface ParseOptions {
   language: string; // BCP-47 like ru-RU, en-US
   sessionName: string;
-  mimeType: string;
-  imageBase64: string; // no data: prefix, raw base64
+  mimeType?: string;
+  imageBase64?: string; // no data: prefix, raw base64
+  qrData?: string;
 }
 
 // Environment-driven configuration
@@ -166,9 +167,10 @@ Rules:
 - totalPrice = unitPrice * quantity (round to 2 decimals).
 - Include service/tips/fees as separate items with kind set.
 - If currency symbol present ignore it when recording numbers.
-- Detect the receipt currency (e.g. symbols like $, €, ₽ or textual names) and report the ISO 4217 code in uppercase.
+- Detect the receipt currency (e.g. symbols like $, €, ₽, "so'm", "UZS" or textual names) and report the ISO 4217 code in uppercase.
 - When unsure about currency, return "UNKNOWN".
-- grandTotal = sum of item totalPrice values (after any discounts).`;
+- grandTotal = sum of item totalPrice values (after any discounts).
+- For Uzbekistan receipts (p.uz/soliq.uz): look for table-like structures containing product names, quantities (often followed by 'dona' or 'kg'), and prices. Make sure to extract the individual items correctly.`;
 
 function safeParseJson(text: string): { ok: boolean; data?: ParseResult } {
   try {
@@ -255,6 +257,38 @@ function mockParse(): ParseResult {
   };
 }
 
+/** Fetches and cleans text from a URL (e.g. for UZ tax receipts) */
+async function fetchUrlContent(url: string): Promise<string | null> {
+  try {
+    if (DEBUG_PARSE) console.log(`[fetchUrlContent] Fetching: ${url}`);
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'uz-UZ,uz;q=0.9,ru-RU;q=0.8,ru;q=0.7,en-US;q=0.6,en;q=0.5'
+      }
+    });
+    if (!resp.ok) {
+      if (DEBUG_PARSE) console.warn(`[fetchUrlContent] HTTP ${resp.status} for ${url}`);
+      return null;
+    }
+    const text = await resp.text();
+    // Basic cleanup: remove scripts, styles, and tags to keep it lightweight for LLM
+    const cleaned = text
+      .replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gim, "")
+      .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gim, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    
+    if (DEBUG_PARSE) console.log(`[fetchUrlContent] Success, length: ${cleaned.length}`);
+    return cleaned.slice(0, 5000); // Limit to 5000 chars
+  } catch (e) {
+    if (DEBUG_PARSE) console.warn('[fetchUrlContent] Failed:', e);
+    return null;
+  }
+}
+
 export async function parseReceipt(
   options: ParseOptions
 ): Promise<ParseResult> {
@@ -262,6 +296,14 @@ export async function parseReceipt(
     if (DEBUG_PARSE)
       console.warn("[parseReceipt] Using mock: GEMINI_API_KEY not set");
     return mockParse();
+  }
+
+  let finalQrData = options.qrData;
+  if (finalQrData && finalQrData.startsWith('http')) {
+    const fetched = await fetchUrlContent(finalQrData);
+    if (fetched) {
+      finalQrData = `ORIGINAL URL: ${finalQrData}\n\nPAGE CONTENT FOR EXTRACTION:\n${fetched}`;
+    }
   }
 
   if (DEBUG_PARSE && !/^AIza[0-9A-Za-z_-]{10,}$/.test(GEMINI_API_KEY)) {
@@ -299,8 +341,9 @@ export async function parseReceipt(
       const text = await generateViaRest(
         modelName,
         prompt,
-        imagePart.inlineData.data,
-        imagePart.inlineData.mimeType
+        options.imageBase64,
+        options.mimeType,
+        finalQrData
       );
       const parsed = safeParseJson(text);
       if (!parsed.ok || !parsed.data) {
@@ -386,8 +429,9 @@ export async function parseReceipt(
 async function generateViaRest(
   model: string,
   prompt: string,
-  base64: string,
-  mime: string
+  base64?: string,
+  mime?: string,
+  qrData?: string
 ): Promise<string> {
   const order = ["v1"]; // 🔧 always use v1, no v1beta anymore
   let lastErr: any = null;
@@ -395,14 +439,20 @@ async function generateViaRest(
     const url = `https://generativelanguage.googleapis.com/${ver}/models/${model}:generateContent?key=${encodeURIComponent(
       GEMINI_API_KEY as string
     )}`;
+    
+    const parts: any[] = [{ text: `${prompt}\nOUTPUT ONLY RAW JSON. NO MARKDOWN.` }];
+    
+    if (qrData) {
+      parts.push({ text: `Extract the receipt information from this QR Code data/URL payload: ${qrData}` });
+    } else if (base64 && mime) {
+      parts.push({ inlineData: { data: base64, mimeType: mime } });
+    }
+
     const body = {
       contents: [
         {
           role: "user",
-          parts: [
-            { text: `${prompt}\nOUTPUT ONLY RAW JSON. NO MARKDOWN.` },
-            { inlineData: { data: base64, mimeType: mime } },
-          ],
+          parts,
         },
       ],
       generationConfig: { temperature: 0.1 },

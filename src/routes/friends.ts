@@ -306,19 +306,34 @@ router.get(
   authenticateToken,
   async (req: AuthRequest, res: Response) => {
     try {
-      const q = String(req.query.q || "").trim();
-      console.log("GET /friends/search q:", q);
+      let q = String(req.query.q || "").trim();
+      console.log("GET /friends/search raw q:", q);
+      
+      // Remove @ if present
+      q = q.replace(/^@/, '');
+      
       if (!q) {
         console.log("GET /friends/search empty query");
         return res.json([]);
       }
-      const user = await prisma.user.findUnique({
-        where: { uniqueId: q },
+
+      // Search for partial nickname match OR partial username match
+      const users = await prisma.user.findMany({
+        where: {
+          OR: [
+            { uniqueId: { contains: q, mode: 'insensitive' } },
+            { username: { contains: q, mode: 'insensitive' } },
+          ],
+        },
         select: userPublicSelect,
+        take: 10,
       });
-      const result = user
-        ? [{ ...user, avatarUrl: user.avatarUrl ?? getDefaultAvatarUrl() }]
-        : [];
+
+      const result = users.map(user => ({
+        ...user,
+        avatarUrl: user.avatarUrl ?? getDefaultAvatarUrl()
+      }));
+
       console.log("GET /friends/search result count:", result.length);
       return res.json(result);
     } catch (err) {

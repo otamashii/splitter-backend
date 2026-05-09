@@ -67,7 +67,7 @@ function generateUniqueId() {
 router.post("/register", async (req, res) => {
   const ct = String(req.headers["content-type"] || "");
   console.log("/auth/register content-type:", ct);
-  console.log("/auth/register body:", req.body);
+  console.log("/auth/register body:", JSON.stringify(req.body, null, 2));
   try {
     if (!ct.includes("application/json")) {
       return res
@@ -75,11 +75,12 @@ router.post("/register", async (req, res) => {
         .json({ error: "Content-Type must be application/json" });
     }
 
-    const { email, password, username } = req.body ?? {};
+    const { email, password, username, uniqueId: providedUniqueId } = req.body ?? {};
     console.log("/auth/register types:", {
       email: typeof email,
       password: typeof password,
       username: typeof username,
+      providedUniqueId: typeof providedUniqueId,
     });
 
     // Soft type coercion: numbers → strings, arrays/objects are not allowed
@@ -101,6 +102,12 @@ router.post("/register", async (req, res) => {
         : typeof username === "number"
         ? String(username)
         : username;
+    const uniqueIdVal =
+      typeof providedUniqueId === "string"
+        ? providedUniqueId
+        : typeof providedUniqueId === "number"
+        ? String(providedUniqueId)
+        : providedUniqueId;
 
     if (
       typeof emailVal !== "string" ||
@@ -116,6 +123,11 @@ router.post("/register", async (req, res) => {
     const cleanEmail = emailVal.trim().toLowerCase();
     const cleanUsername = usernameVal.trim();
     const cleanPassword = passwordVal;
+    const cleanUniqueId = uniqueIdVal ? uniqueIdVal.trim().replace(/^@/, '') : "";
+
+    if (cleanUniqueId && !/^[a-zA-Z0-9_]+$/.test(cleanUniqueId)) {
+      return res.status(400).json({ error: "Nickname can only contain letters, numbers and underscores" });
+    }
 
     if (!cleanEmail || !cleanPassword || !cleanUsername) {
       return res
@@ -137,19 +149,32 @@ router.post("/register", async (req, res) => {
       return res.status(409).json({ error: "Email already in use" });
     }
 
-    const hashedPassword = await bcrypt.hash(cleanPassword, 10);
-
-    // Generate uniqueId with multiple attempts to avoid collisions
-    let uniqueId = "";
-    for (let i = 0; i < 5; i++) {
-      uniqueId = generateUniqueId();
-      const exists = await prisma.user.findUnique({ where: { uniqueId } });
-      if (!exists) break;
-      if (i === 4) {
-        return res.status(500).json({ error: "Failed to generate unique ID" });
+    // Check if nickname (uniqueId) is already taken
+    if (cleanUniqueId) {
+      const existingNickname = await prisma.user.findUnique({
+        where: { uniqueId: cleanUniqueId }
+      });
+      if (existingNickname) {
+        return res.status(409).json({ error: "Nickname already taken" });
       }
     }
-    console.log("/auth/register generated uniqueId:", uniqueId);
+
+    const hashedPassword = await bcrypt.hash(cleanPassword, 10);
+
+    // Final uniqueId determination
+    let uniqueId = cleanUniqueId;
+    if (!uniqueId) {
+      // Generate uniqueId with multiple attempts to avoid collisions
+      for (let i = 0; i < 5; i++) {
+        uniqueId = generateUniqueId();
+        const exists = await prisma.user.findUnique({ where: { uniqueId } });
+        if (!exists) break;
+        if (i === 4) {
+          return res.status(500).json({ error: "Failed to generate unique ID" });
+        }
+      }
+    }
+    console.log("/auth/register final uniqueId:", uniqueId);
 
     let user;
     try {
@@ -164,7 +189,7 @@ router.post("/register", async (req, res) => {
     } catch (e: any) {
       if (e?.code === "P2002") {
         // unique constraint conflict
-        return res.status(409).json({ error: "Email already in use" });
+        return res.status(409).json({ error: "Email or Nickname already in use" });
       }
       throw e;
     }
