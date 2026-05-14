@@ -108,7 +108,66 @@ router.post("/", authenticateToken, async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ error: "Server error" });
   }
 });
-// GET /chats/details/:id - Get a single chat with members
+
+// GET /chats/group/:groupId - Get or create group chat
+router.get("/group/:groupId", authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const groupId = parseInt(req.params.groupId as string);
+    if (isNaN(groupId)) return res.status(400).json({ error: "Invalid groupId" });
+
+    // Check if user is a member or owner of this group
+    const group = await prisma.group.findUnique({
+      where: { id: groupId },
+      include: {
+        members: { select: { userId: true } },
+        chat: true,
+      },
+    });
+
+    if (!group) return res.status(404).json({ error: "Group not found" });
+
+    const isMember = group.ownerId === req.user.id ||
+      group.members.some((m) => m.userId === req.user.id);
+    if (!isMember) return res.status(403).json({ error: "Not a group member" });
+
+    // Find or create group chat
+    let chat = group.chat;
+    if (!chat) {
+      // Get all group member IDs (owner + members)
+      const memberIds = [
+        group.ownerId,
+        ...group.members.map((m) => m.userId).filter((id) => id !== group.ownerId),
+      ];
+      chat = await prisma.chat.create({
+        data: {
+          type: "GROUP",
+          groupId,
+          members: {
+            create: memberIds.map((userId) => ({ userId })),
+          },
+        },
+      });
+    } else {
+      // Ensure current user is in the chat members
+      const existing = await prisma.chatMember.findUnique({
+        where: { chatId_userId: { chatId: chat.id, userId: req.user.id } },
+      });
+      if (!existing) {
+        await prisma.chatMember.create({
+          data: { chatId: chat.id, userId: req.user.id },
+        });
+      }
+    }
+
+    return res.json({ chatId: chat.id, groupName: group.name });
+  } catch (err) {
+    console.error("GET /chats/group/:groupId error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+
 router.get("/details/:id", authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
